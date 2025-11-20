@@ -5,6 +5,7 @@ import Script from "next/script";
 import "./globals.css";
 // Import all available fonts for AI usage
 import "../lib/fonts";
+import { AuthProvider } from "@/lib/auth-context";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -17,7 +18,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "CareerBoost - Impulsione Sua Carreira com IA",
+  title: "CareerCatalyst - Impulsione Sua Carreira com IA",
   description: "Plataforma profissional com inteligência artificial para acelerar sua carreira. Crie currículos otimizados, personalize cartas de apresentação e prepare-se para entrevistas com feedback em tempo real.",
 };
 
@@ -34,7 +35,9 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
-        {children}
+        <AuthProvider>
+          {children}
+        </AuthProvider>
       </body>
     </html>
   );

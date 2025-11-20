@@ -13,11 +13,13 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import Link from "next/link";
+import { supabase } from "@/lib/supabase";
+import LiveChat from "@/components/custom/live-chat";
 
 interface UserData {
+  id: string;
   name: string;
   email: string;
-  authenticated: boolean;
 }
 
 interface SavedDocument {
@@ -31,73 +33,197 @@ interface SavedDocument {
 export default function DashboardPage() {
   const router = useRouter();
   const [user, setUser] = useState<UserData | null>(null);
+  const [loading, setLoading] = useState(true);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [savedDocuments, setSavedDocuments] = useState<SavedDocument[]>([]);
   const [stats, setStats] = useState({
-    resumesCreated: 3,
-    applicationsTracked: 12,
-    interviewsPrepared: 5,
-    successRate: 85
+    resumesCreated: 0,
+    applicationsTracked: 0,
+    interviewsPrepared: 0,
+    successRate: 0
   });
+  const [notifications, setNotifications] = useState<any[]>([]);
 
   useEffect(() => {
-    // Verificar autenticação
-    const userData = localStorage.getItem("user");
-    if (!userData) {
-      router.push("/auth/login");
-      return;
-    }
+    checkUser();
+  }, []);
 
-    const parsedUser = JSON.parse(userData);
-    if (!parsedUser.authenticated) {
-      router.push("/auth/login");
-      return;
-    }
-
-    setUser(parsedUser);
-
-    // Carregar documentos salvos (simulação)
-    const mockDocuments: SavedDocument[] = [
-      {
-        id: "1",
-        type: "resume",
-        title: "Currículo - Analista de Marketing",
-        createdAt: "2024-01-15",
-        status: "completed"
-      },
-      {
-        id: "2",
-        type: "cover",
-        title: "Carta - Google Brasil",
-        createdAt: "2024-01-14",
-        status: "completed"
-      },
-      {
-        id: "3",
-        type: "interview",
-        title: "Preparação - Entrevista Tech",
-        createdAt: "2024-01-13",
-        status: "draft"
+  const checkUser = async () => {
+    try {
+      // Verificar se usuário está autenticado no Supabase
+      const { data: { user: supabaseUser } } = await supabase.auth.getUser();
+      
+      if (!supabaseUser) {
+        router.push("/auth/login");
+        return;
       }
-    ];
-    setSavedDocuments(mockDocuments);
-  }, [router]);
 
-  const handleLogout = () => {
-    localStorage.removeItem("user");
+      // Buscar dados do usuário na tabela users
+      const { data: userData } = await supabase
+        .from('users')
+        .select('*')
+        .eq('id', supabaseUser.id)
+        .single();
+
+      if (userData) {
+        setUser({
+          id: userData.id,
+          name: userData.full_name || supabaseUser.email?.split('@')[0] || 'Usuário',
+          email: userData.email || supabaseUser.email || ''
+        });
+      } else {
+        setUser({
+          id: supabaseUser.id,
+          name: supabaseUser.email?.split('@')[0] || 'Usuário',
+          email: supabaseUser.email || ''
+        });
+      }
+
+      // Carregar dados do dashboard
+      await loadDashboardData(supabaseUser.id);
+      
+    } catch (error) {
+      console.error('Erro ao verificar usuário:', error);
+      router.push("/auth/login");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadDashboardData = async (userId: string) => {
+    try {
+      // Carregar progresso do usuário
+      const { data: progressData } = await supabase
+        .from('user_progress')
+        .select('*')
+        .eq('user_id', userId)
+        .single();
+
+      if (progressData) {
+        const avgScore = progressData.interviews_practiced > 0 
+          ? Math.round(progressData.total_score / progressData.interviews_practiced)
+          : 0;
+
+        setStats({
+          resumesCreated: progressData.resumes_created || 0,
+          applicationsTracked: progressData.resumes_created + progressData.cover_letters_created || 0,
+          interviewsPrepared: progressData.interviews_practiced || 0,
+          successRate: avgScore
+        });
+      }
+
+      // Carregar documentos recentes
+      const documents: SavedDocument[] = [];
+
+      // Carregar currículos
+      const { data: resumes } = await supabase
+        .from('resumes')
+        .select('*')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(3);
+
+      if (resumes) {
+        resumes.forEach(resume => {
+          documents.push({
+            id: resume.id,
+            type: 'resume',
+            title: `Currículo - ${resume.name}`,
+            createdAt: resume.created_at,
+            status: 'completed'
+          });
+        });
+      }
+
+      // Carregar cartas
+      const { data: coverLetters } = await supabase
+        .from('cover_letters')
+        .select('*')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(3);
+
+      if (coverLetters) {
+        coverLetters.forEach(letter => {
+          documents.push({
+            id: letter.id,
+            type: 'cover',
+            title: `Carta - ${letter.company}`,
+            createdAt: letter.created_at,
+            status: 'completed'
+          });
+        });
+      }
+
+      // Carregar preparações de entrevista
+      const { data: interviews } = await supabase
+        .from('interview_preparations')
+        .select('*')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(3);
+
+      if (interviews) {
+        interviews.forEach(interview => {
+          documents.push({
+            id: interview.id,
+            type: 'interview',
+            title: `Preparação - ${interview.question.substring(0, 30)}...`,
+            createdAt: interview.created_at,
+            status: interview.feedback ? 'completed' : 'draft'
+          });
+        });
+      }
+
+      // Ordenar por data
+      documents.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      setSavedDocuments(documents.slice(0, 5));
+
+      // Carregar notificações
+      const { data: notificationsData } = await supabase
+        .from('notifications')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('read', false)
+        .order('created_at', { ascending: false })
+        .limit(3);
+
+      if (notificationsData) {
+        setNotifications(notificationsData);
+      }
+
+    } catch (error) {
+      console.error('Erro ao carregar dados do dashboard:', error);
+    }
+  };
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
     router.push("/");
   };
 
-  if (!user) {
+  if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
         <div className="text-center">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600 mx-auto mb-4"></div>
-          <p className="text-gray-600">Carregando...</p>
+          <p className="text-gray-600">Carregando seu dashboard...</p>
         </div>
       </div>
     );
   }
+
+  if (!user) {
+    return null;
+  }
+
+  const profileProgress = Math.min(
+    100,
+    (stats.resumesCreated > 0 ? 25 : 0) +
+    (stats.interviewsPrepared > 0 ? 25 : 0) +
+    (savedDocuments.some(d => d.type === 'cover') ? 25 : 0) +
+    25 // Base por ter criado conta
+  );
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -122,9 +248,11 @@ export default function DashboardPage() {
               </Link>
               <Button variant="ghost" size="sm" className="relative">
                 <Bell className="w-5 h-5" />
-                <span className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 rounded-full text-xs text-white flex items-center justify-center">
-                  3
-                </span>
+                {notifications.length > 0 && (
+                  <span className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 rounded-full text-xs text-white flex items-center justify-center">
+                    {notifications.length}
+                  </span>
+                )}
               </Button>
               <Button variant="ghost" size="sm" onClick={handleLogout}>
                 <LogOut className="w-5 h-5 mr-2" />
@@ -153,7 +281,7 @@ export default function DashboardPage() {
                 </Link>
                 <Button variant="ghost" size="sm" className="justify-start">
                   <Bell className="w-5 h-5 mr-2" />
-                  Notificações (3)
+                  Notificações ({notifications.length})
                 </Button>
                 <Button variant="ghost" size="sm" className="justify-start" onClick={handleLogout}>
                   <LogOut className="w-5 h-5 mr-2" />
@@ -190,7 +318,7 @@ export default function DashboardPage() {
             </CardHeader>
             <CardContent>
               <div className="text-3xl font-bold text-gray-900">{stats.resumesCreated}</div>
-              <p className="text-xs text-green-600 mt-1">+2 este mês</p>
+              <p className="text-xs text-gray-500 mt-1">Total de currículos</p>
             </CardContent>
           </Card>
 
@@ -198,14 +326,14 @@ export default function DashboardPage() {
             <CardHeader className="pb-3">
               <div className="flex items-center justify-between">
                 <CardTitle className="text-sm font-medium text-gray-600">
-                  Candidaturas
+                  Documentos Totais
                 </CardTitle>
                 <Target className="w-5 h-5 text-blue-600" />
               </div>
             </CardHeader>
             <CardContent>
               <div className="text-3xl font-bold text-gray-900">{stats.applicationsTracked}</div>
-              <p className="text-xs text-green-600 mt-1">+5 esta semana</p>
+              <p className="text-xs text-gray-500 mt-1">Currículos e cartas</p>
             </CardContent>
           </Card>
 
@@ -220,7 +348,7 @@ export default function DashboardPage() {
             </CardHeader>
             <CardContent>
               <div className="text-3xl font-bold text-gray-900">{stats.interviewsPrepared}</div>
-              <p className="text-xs text-green-600 mt-1">+1 hoje</p>
+              <p className="text-xs text-gray-500 mt-1">Simulações realizadas</p>
             </CardContent>
           </Card>
 
@@ -228,13 +356,13 @@ export default function DashboardPage() {
             <CardHeader className="pb-3">
               <div className="flex items-center justify-between">
                 <CardTitle className="text-sm font-medium text-gray-600">
-                  Taxa de Sucesso
+                  Pontuação Média
                 </CardTitle>
                 <TrendingUp className="w-5 h-5 text-green-600" />
               </div>
             </CardHeader>
             <CardContent>
-              <div className="text-3xl font-bold text-gray-900">{stats.successRate}%</div>
+              <div className="text-3xl font-bold text-gray-900">{stats.successRate}</div>
               <Progress value={stats.successRate} className="mt-2" />
             </CardContent>
           </Card>
@@ -252,49 +380,57 @@ export default function DashboardPage() {
                     <CardTitle>Documentos Recentes</CardTitle>
                     <CardDescription>Seus currículos, cartas e preparações</CardDescription>
                   </div>
-                  <Button size="sm" className="bg-indigo-600 hover:bg-indigo-700">
-                    <Plus className="w-4 h-4 mr-2" />
-                    Novo
-                  </Button>
+                  <Link href="/#demo">
+                    <Button size="sm" className="bg-indigo-600 hover:bg-indigo-700">
+                      <Plus className="w-4 h-4 mr-2" />
+                      Novo
+                    </Button>
+                  </Link>
                 </div>
               </CardHeader>
               <CardContent>
-                <div className="space-y-3">
-                  {savedDocuments.map((doc) => (
-                    <div
-                      key={doc.id}
-                      className="flex items-center justify-between p-4 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors"
-                    >
-                      <div className="flex items-center gap-3">
-                        <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
-                          doc.type === "resume" ? "bg-indigo-100" :
-                          doc.type === "cover" ? "bg-blue-100" : "bg-purple-100"
-                        }`}>
-                          {doc.type === "resume" && <FileText className="w-5 h-5 text-indigo-600" />}
-                          {doc.type === "cover" && <MessageSquare className="w-5 h-5 text-blue-600" />}
-                          {doc.type === "interview" && <Target className="w-5 h-5 text-purple-600" />}
-                        </div>
-                        <div>
-                          <div className="font-medium text-gray-900">{doc.title}</div>
-                          <div className="text-sm text-gray-500">
-                            {new Date(doc.createdAt).toLocaleDateString("pt-BR")}
+                {savedDocuments.length === 0 ? (
+                  <div className="text-center py-8">
+                    <FileText className="w-12 h-12 text-gray-300 mx-auto mb-3" />
+                    <p className="text-gray-500 mb-4">Você ainda não criou nenhum documento</p>
+                    <Link href="/#demo">
+                      <Button className="bg-indigo-600 hover:bg-indigo-700">
+                        Criar Primeiro Documento
+                      </Button>
+                    </Link>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {savedDocuments.map((doc) => (
+                      <div
+                        key={doc.id}
+                        className="flex items-center justify-between p-4 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors"
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
+                            doc.type === "resume" ? "bg-indigo-100" :
+                            doc.type === "cover" ? "bg-blue-100" : "bg-purple-100"
+                          }`}>
+                            {doc.type === "resume" && <FileText className="w-5 h-5 text-indigo-600" />}
+                            {doc.type === "cover" && <MessageSquare className="w-5 h-5 text-blue-600" />}
+                            {doc.type === "interview" && <Target className="w-5 h-5 text-purple-600" />}
+                          </div>
+                          <div>
+                            <div className="font-medium text-gray-900">{doc.title}</div>
+                            <div className="text-sm text-gray-500">
+                              {new Date(doc.createdAt).toLocaleDateString("pt-BR")}
+                            </div>
                           </div>
                         </div>
+                        <div className="flex items-center gap-2">
+                          <Badge variant={doc.status === "completed" ? "default" : "secondary"}>
+                            {doc.status === "completed" ? "Completo" : "Rascunho"}
+                          </Badge>
+                        </div>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <Badge variant={doc.status === "completed" ? "default" : "secondary"}>
-                          {doc.status === "completed" ? "Completo" : "Rascunho"}
-                        </Badge>
-                        <Button variant="ghost" size="sm">
-                          <Eye className="w-4 h-4" />
-                        </Button>
-                        <Button variant="ghost" size="sm">
-                          <Download className="w-4 h-4" />
-                        </Button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
+                )}
               </CardContent>
             </Card>
 
@@ -346,10 +482,6 @@ export default function DashboardPage() {
                     <div className="text-sm text-gray-500">{user.email}</div>
                   </div>
                 </div>
-                <Button variant="outline" className="w-full" size="sm">
-                  <Settings className="w-4 h-4 mr-2" />
-                  Editar Perfil
-                </Button>
               </CardContent>
             </Card>
 
@@ -358,50 +490,37 @@ export default function DashboardPage() {
               <CardHeader>
                 <div className="flex items-center justify-between">
                   <CardTitle className="text-lg">Notificações</CardTitle>
-                  <Badge variant="secondary">3 novas</Badge>
+                  {notifications.length > 0 && (
+                    <Badge variant="secondary">{notifications.length} novas</Badge>
+                  )}
                 </div>
               </CardHeader>
               <CardContent>
-                <div className="space-y-3">
-                  <div className="flex items-start gap-3 p-3 bg-blue-50 rounded-lg">
-                    <CheckCircle2 className="w-5 h-5 text-blue-600 mt-0.5" />
-                    <div>
-                      <div className="text-sm font-medium text-gray-900">
-                        Currículo aprovado!
-                      </div>
-                      <div className="text-xs text-gray-600">
-                        Seu currículo passou na análise ATS
-                      </div>
-                      <div className="text-xs text-gray-400 mt-1">Há 2 horas</div>
-                    </div>
+                {notifications.length === 0 ? (
+                  <div className="text-center py-4">
+                    <Bell className="w-8 h-8 text-gray-300 mx-auto mb-2" />
+                    <p className="text-sm text-gray-500">Nenhuma notificação nova</p>
                   </div>
-
-                  <div className="flex items-start gap-3 p-3 bg-green-50 rounded-lg">
-                    <Calendar className="w-5 h-5 text-green-600 mt-0.5" />
-                    <div>
-                      <div className="text-sm font-medium text-gray-900">
-                        Entrevista agendada
+                ) : (
+                  <div className="space-y-3">
+                    {notifications.map((notif) => (
+                      <div key={notif.id} className="flex items-start gap-3 p-3 bg-blue-50 rounded-lg">
+                        <CheckCircle2 className="w-5 h-5 text-blue-600 mt-0.5" />
+                        <div>
+                          <div className="text-sm font-medium text-gray-900">
+                            {notif.title}
+                          </div>
+                          <div className="text-xs text-gray-600">
+                            {notif.message}
+                          </div>
+                          <div className="text-xs text-gray-400 mt-1">
+                            {new Date(notif.created_at).toLocaleDateString('pt-BR')}
+                          </div>
+                        </div>
                       </div>
-                      <div className="text-xs text-gray-600">
-                        Empresa XYZ - Amanhã às 14h
-                      </div>
-                      <div className="text-xs text-gray-400 mt-1">Há 5 horas</div>
-                    </div>
+                    ))}
                   </div>
-
-                  <div className="flex items-start gap-3 p-3 bg-yellow-50 rounded-lg">
-                    <AlertCircle className="w-5 h-5 text-yellow-600 mt-0.5" />
-                    <div>
-                      <div className="text-sm font-medium text-gray-900">
-                        Lembrete de follow-up
-                      </div>
-                      <div className="text-xs text-gray-600">
-                        Fazer follow-up com Google Brasil
-                      </div>
-                      <div className="text-xs text-gray-400 mt-1">Há 1 dia</div>
-                    </div>
-                  </div>
-                </div>
+                )}
               </CardContent>
             </Card>
 
@@ -416,53 +535,79 @@ export default function DashboardPage() {
                   <div>
                     <div className="flex items-center justify-between mb-2">
                       <span className="text-sm text-gray-600">Perfil Completo</span>
-                      <span className="text-sm font-semibold text-gray-900">75%</span>
+                      <span className="text-sm font-semibold text-gray-900">{profileProgress}%</span>
                     </div>
-                    <Progress value={75} />
+                    <Progress value={profileProgress} />
                   </div>
 
                   <div className="space-y-2 text-sm">
                     <div className="flex items-center gap-2 text-green-600">
                       <CheckCircle2 className="w-4 h-4" />
-                      <span>Currículo criado</span>
+                      <span>Conta criada</span>
                     </div>
-                    <div className="flex items-center gap-2 text-green-600">
-                      <CheckCircle2 className="w-4 h-4" />
-                      <span>Carta de apresentação</span>
-                    </div>
-                    <div className="flex items-center gap-2 text-gray-400">
-                      <Clock className="w-4 h-4" />
-                      <span>Adicionar foto de perfil</span>
-                    </div>
-                    <div className="flex items-center gap-2 text-gray-400">
-                      <Clock className="w-4 h-4" />
-                      <span>Conectar LinkedIn</span>
-                    </div>
+                    {stats.resumesCreated > 0 ? (
+                      <div className="flex items-center gap-2 text-green-600">
+                        <CheckCircle2 className="w-4 h-4" />
+                        <span>Currículo criado</span>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2 text-gray-400">
+                        <Clock className="w-4 h-4" />
+                        <span>Criar primeiro currículo</span>
+                      </div>
+                    )}
+                    {savedDocuments.some(d => d.type === 'cover') ? (
+                      <div className="flex items-center gap-2 text-green-600">
+                        <CheckCircle2 className="w-4 h-4" />
+                        <span>Carta de apresentação</span>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2 text-gray-400">
+                        <Clock className="w-4 h-4" />
+                        <span>Criar carta de apresentação</span>
+                      </div>
+                    )}
+                    {stats.interviewsPrepared > 0 ? (
+                      <div className="flex items-center gap-2 text-green-600">
+                        <CheckCircle2 className="w-4 h-4" />
+                        <span>Preparação para entrevista</span>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2 text-gray-400">
+                        <Clock className="w-4 h-4" />
+                        <span>Praticar entrevista</span>
+                      </div>
+                    )}
                   </div>
                 </div>
               </CardContent>
             </Card>
 
             {/* Achievement */}
-            <Card className="border-gray-200 bg-gradient-to-br from-indigo-50 to-blue-50">
-              <CardHeader>
-                <div className="flex items-center gap-2">
-                  <Award className="w-5 h-5 text-indigo-600" />
-                  <CardTitle className="text-lg">Conquista Desbloqueada!</CardTitle>
-                </div>
-              </CardHeader>
-              <CardContent>
-                <p className="text-sm text-gray-700 mb-3">
-                  Você criou seu primeiro currículo profissional! Continue assim para alcançar seus objetivos.
-                </p>
-                <Badge className="bg-indigo-600 text-white">
-                  Primeiro Passo 🎉
-                </Badge>
-              </CardContent>
-            </Card>
+            {stats.resumesCreated > 0 && (
+              <Card className="border-gray-200 bg-gradient-to-br from-indigo-50 to-blue-50">
+                <CardHeader>
+                  <div className="flex items-center gap-2">
+                    <Award className="w-5 h-5 text-indigo-600" />
+                    <CardTitle className="text-lg">Conquista Desbloqueada!</CardTitle>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-sm text-gray-700 mb-3">
+                    Você criou seu primeiro currículo profissional! Continue assim para alcançar seus objetivos.
+                  </p>
+                  <Badge className="bg-indigo-600 text-white">
+                    Primeiro Passo 🎉
+                  </Badge>
+                </CardContent>
+              </Card>
+            )}
           </div>
         </div>
       </main>
+
+      {/* Live Chat Component */}
+      <LiveChat userId={user.id} userName={user.name} />
     </div>
   );
 }
