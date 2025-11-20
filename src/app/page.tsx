@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { 
   Briefcase, FileText, MessageSquare, Target, CheckCircle2, Sparkles, 
   Menu, X, Shield, Lock, Award, TrendingUp, Users, Linkedin, 
@@ -13,11 +13,13 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import Link from "next/link";
+import { supabase } from "@/lib/supabase";
 
 export default function Home() {
   const [showSplash, setShowSplash] = useState(true);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [activeTab, setActiveTab] = useState("resume");
+  const [currentUser, setCurrentUser] = useState<any>(null);
   
   // Resume Generator State
   const [resumeName, setResumeName] = useState("");
@@ -37,8 +39,19 @@ export default function Home() {
   const [interviewFeedback, setInterviewFeedback] = useState("");
   const [feedbackGenerated, setFeedbackGenerated] = useState(false);
 
+  useEffect(() => {
+    // Verificar se usuário está logado
+    const checkUser = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        setCurrentUser(user);
+      }
+    };
+    checkUser();
+  }, []);
+
   // Resume Generator Function
-  const generateResume = () => {
+  const generateResume = async () => {
     if (!resumeName || !resumeExperience) {
       alert("Por favor, preencha todos os campos!");
       return;
@@ -93,10 +106,31 @@ Universidade Federal - Conclusão: 2024
 
     setGeneratedResume(resume);
     setResumeGenerated(true);
+
+    // Salvar no Supabase se usuário estiver logado
+    if (currentUser) {
+      try {
+        const { error } = await supabase
+          .from('resumes')
+          .insert({
+            user_id: currentUser.id,
+            name: resumeName,
+            experience: resumeExperience,
+            content: resume
+          });
+
+        if (!error) {
+          // Atualizar progresso
+          await updateUserProgress('resumes_created');
+        }
+      } catch (err) {
+        console.error('Erro ao salvar currículo:', err);
+      }
+    }
   };
 
   // Cover Letter Generator Function
-  const generateCoverLetter = () => {
+  const generateCoverLetter = async () => {
     if (!coverLetterCompany || !coverLetterPosition) {
       alert("Por favor, preencha todos os campos!");
       return;
@@ -150,10 +184,31 @@ ${resumeName ? `${resumeName.toLowerCase().replace(/\s+/g, '.')}@email.com` : "[
 
     setGeneratedCoverLetter(coverLetter);
     setCoverLetterGenerated(true);
+
+    // Salvar no Supabase se usuário estiver logado
+    if (currentUser) {
+      try {
+        const { error } = await supabase
+          .from('cover_letters')
+          .insert({
+            user_id: currentUser.id,
+            company: coverLetterCompany,
+            position: coverLetterPosition,
+            content: coverLetter
+          });
+
+        if (!error) {
+          // Atualizar progresso
+          await updateUserProgress('cover_letters_created');
+        }
+      } catch (err) {
+        console.error('Erro ao salvar carta:', err);
+      }
+    }
   };
 
   // Interview Feedback Function
-  const generateInterviewFeedback = () => {
+  const generateInterviewFeedback = async () => {
     if (!interviewQuestion || !interviewAnswer) {
       alert("Por favor, preencha a pergunta e sua resposta!");
       return;
@@ -253,6 +308,79 @@ ${feedback.map((item, index) => `${index + 1}. ${item}`).join('\n')}
 
     setInterviewFeedback(feedbackText);
     setFeedbackGenerated(true);
+
+    // Salvar no Supabase se usuário estiver logado
+    if (currentUser) {
+      try {
+        const { error } = await supabase
+          .from('interview_preparations')
+          .insert({
+            user_id: currentUser.id,
+            question: interviewQuestion,
+            answer: interviewAnswer,
+            feedback: feedbackText,
+            score: score
+          });
+
+        if (!error) {
+          // Atualizar progresso
+          await updateUserProgress('interviews_practiced', score);
+        }
+      } catch (err) {
+        console.error('Erro ao salvar preparação:', err);
+      }
+    }
+  };
+
+  // Atualizar progresso do usuário
+  const updateUserProgress = async (field: string, scoreToAdd: number = 0) => {
+    if (!currentUser) return;
+
+    try {
+      // Buscar progresso atual
+      const { data: progress } = await supabase
+        .from('user_progress')
+        .select('*')
+        .eq('user_id', currentUser.id)
+        .single();
+
+      if (progress) {
+        // Atualizar progresso existente
+        const updates: any = {
+          updated_at: new Date().toISOString()
+        };
+
+        if (field === 'resumes_created') {
+          updates.resumes_created = progress.resumes_created + 1;
+        } else if (field === 'cover_letters_created') {
+          updates.cover_letters_created = progress.cover_letters_created + 1;
+        } else if (field === 'interviews_practiced') {
+          updates.interviews_practiced = progress.interviews_practiced + 1;
+          updates.total_score = progress.total_score + scoreToAdd;
+        }
+
+        await supabase
+          .from('user_progress')
+          .update(updates)
+          .eq('user_id', currentUser.id);
+      } else {
+        // Criar novo progresso
+        const newProgress: any = {
+          user_id: currentUser.id,
+          resumes_created: field === 'resumes_created' ? 1 : 0,
+          cover_letters_created: field === 'cover_letters_created' ? 1 : 0,
+          interviews_practiced: field === 'interviews_practiced' ? 1 : 0,
+          total_score: scoreToAdd,
+          achievements: []
+        };
+
+        await supabase
+          .from('user_progress')
+          .insert(newProgress);
+      }
+    } catch (err) {
+      console.error('Erro ao atualizar progresso:', err);
+    }
   };
 
   // Download Resume Function
@@ -391,14 +519,24 @@ ${feedback.map((item, index) => `${index + 1}. ${item}`).join('\n')}
               <a href="#testimonials" className="text-gray-700 hover:text-indigo-600 transition-colors font-medium">
                 Depoimentos
               </a>
-              <Link href="/auth/login">
-                <Button variant="ghost">Entrar</Button>
-              </Link>
-              <Link href="/auth/register">
-                <Button className="bg-indigo-600 hover:bg-indigo-700 shadow-md">
-                  Começar Agora
-                </Button>
-              </Link>
+              {currentUser ? (
+                <Link href="/dashboard">
+                  <Button className="bg-indigo-600 hover:bg-indigo-700 shadow-md">
+                    Dashboard
+                  </Button>
+                </Link>
+              ) : (
+                <>
+                  <Link href="/auth/login">
+                    <Button variant="ghost">Entrar</Button>
+                  </Link>
+                  <Link href="/auth/register">
+                    <Button className="bg-indigo-600 hover:bg-indigo-700 shadow-md">
+                      Começar Agora
+                    </Button>
+                  </Link>
+                </>
+              )}
             </nav>
 
             {/* Mobile Menu Button */}
@@ -426,14 +564,24 @@ ${feedback.map((item, index) => `${index + 1}. ${item}`).join('\n')}
                 <a href="#testimonials" className="text-gray-700 hover:text-indigo-600 transition-colors font-medium">
                   Depoimentos
                 </a>
-                <Link href="/auth/login">
-                  <Button variant="ghost" className="w-full">Entrar</Button>
-                </Link>
-                <Link href="/auth/register">
-                  <Button className="bg-indigo-600 hover:bg-indigo-700 w-full">
-                    Começar Agora
-                  </Button>
-                </Link>
+                {currentUser ? (
+                  <Link href="/dashboard">
+                    <Button className="bg-indigo-600 hover:bg-indigo-700 w-full">
+                      Dashboard
+                    </Button>
+                  </Link>
+                ) : (
+                  <>
+                    <Link href="/auth/login">
+                      <Button variant="ghost" className="w-full">Entrar</Button>
+                    </Link>
+                    <Link href="/auth/register">
+                      <Button className="bg-indigo-600 hover:bg-indigo-700 w-full">
+                        Começar Agora
+                      </Button>
+                    </Link>
+                  </>
+                )}
               </nav>
             </div>
           )}
@@ -615,6 +763,7 @@ ${feedback.map((item, index) => `${index + 1}. ${item}`).join('\n')}
                       </div>
                       <p className="text-sm text-gray-700 mb-3">
                         Seu currículo profissional foi criado e otimizado para sistemas ATS.
+                        {currentUser && " Salvo automaticamente no seu dashboard!"}
                       </p>
                       <div className="flex gap-2">
                         <Button 
@@ -687,6 +836,7 @@ ${feedback.map((item, index) => `${index + 1}. ${item}`).join('\n')}
                       </div>
                       <p className="text-sm text-gray-700 mb-3">
                         Sua carta de apresentação personalizada está pronta para uso.
+                        {currentUser && " Salva automaticamente no seu dashboard!"}
                       </p>
                       <div className="flex gap-2">
                         <Button 
@@ -759,6 +909,7 @@ ${feedback.map((item, index) => `${index + 1}. ${item}`).join('\n')}
                       </div>
                       <p className="text-sm text-gray-700 mb-3">
                         Nossa IA analisou sua resposta e gerou feedback detalhado.
+                        {currentUser && " Salvo automaticamente no seu dashboard!"}
                       </p>
                       <Button 
                         size="sm" 

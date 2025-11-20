@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Briefcase, Mail, Lock, User, ArrowRight, Eye, EyeOff, CheckCircle2 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { supabase } from "@/lib/supabase";
 
 export default function RegisterPage() {
   const router = useRouter();
@@ -18,35 +19,82 @@ export default function RegisterPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [acceptTerms, setAcceptTerms] = useState(false);
+  const [error, setError] = useState("");
 
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     
     if (password !== confirmPassword) {
-      alert("As senhas não coincidem!");
+      setError("As senhas não coincidem!");
       return;
     }
 
     if (!acceptTerms) {
-      alert("Você precisa aceitar os termos de uso!");
+      setError("Você precisa aceitar os termos de uso!");
       return;
     }
 
     setLoading(true);
+    setError("");
 
-    // Simulação de registro (em produção, conectar com backend/Supabase)
-    setTimeout(() => {
-      // Salvar dados de autenticação no localStorage
-      localStorage.setItem("user", JSON.stringify({ 
-        email, 
-        name,
-        authenticated: true,
-        createdAt: new Date().toISOString()
-      }));
-      
+    try {
+      // Criar usuário no Supabase Auth
+      const { data: authData, error: authError } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: {
+            full_name: name,
+          }
+        }
+      });
+
+      if (authError) throw authError;
+
+      if (authData.user) {
+        // Criar registro na tabela users
+        const { error: userError } = await supabase
+          .from('users')
+          .insert({
+            id: authData.user.id,
+            email: email,
+            full_name: name,
+          });
+
+        if (userError) throw userError;
+
+        // Criar progresso inicial do usuário
+        const { error: progressError } = await supabase
+          .from('user_progress')
+          .insert({
+            user_id: authData.user.id,
+            resumes_created: 0,
+            cover_letters_created: 0,
+            interviews_practiced: 0,
+            total_score: 0,
+            achievements: []
+          });
+
+        if (progressError) throw progressError;
+
+        // Criar notificação de boas-vindas
+        await supabase
+          .from('notifications')
+          .insert({
+            user_id: authData.user.id,
+            title: "Bem-vindo ao CareerCatalyst!",
+            message: "Comece criando seu primeiro currículo profissional.",
+            type: "welcome",
+            read: false
+          });
+
+        router.push("/dashboard");
+      }
+    } catch (err: any) {
+      setError(err.message || "Erro ao criar conta. Tente novamente.");
+    } finally {
       setLoading(false);
-      router.push("/dashboard");
-    }, 1500);
+    }
   };
 
   const passwordStrength = password.length >= 8 ? "forte" : password.length >= 6 ? "média" : "fraca";
@@ -77,6 +125,12 @@ export default function RegisterPage() {
           </CardHeader>
           <CardContent>
             <form onSubmit={handleRegister} className="space-y-4">
+              {error && (
+                <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+                  {error}
+                </div>
+              )}
+
               <div className="space-y-2">
                 <Label htmlFor="name">Nome Completo</Label>
                 <div className="relative">
